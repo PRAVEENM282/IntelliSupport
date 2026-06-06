@@ -88,6 +88,63 @@ class PipelineEvaluator:
             combined_score=combined,
         )
 
+    async def aevaluate_response(self, query_id: str, response_id: str) -> EvaluationReport:
+        import anyio
+
+        def _get_query_and_response():
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT raw_query FROM intellisupport.queries WHERE query_id = %s",
+                    (query_id,),
+                )
+                q_row = cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT response_text, retrieved_chunk_ids
+                    FROM intellisupport.responses
+                    WHERE response_id = %s AND query_id = %s
+                    """,
+                    (response_id, query_id),
+                )
+                r_row = cur.fetchone()
+            return q_row, r_row
+
+        query_row, response_row = await anyio.to_thread.run_sync(_get_query_and_response)
+
+        if query_row is None or response_row is None:
+            raise ValueError("query_id or response_id not found")
+
+        raw_query = query_row[0]
+        response_text = response_row[0]
+        chunk_ids = response_row[1] or []
+        retrieved_chunks = await anyio.to_thread.run_sync(self._load_chunks_by_id, chunk_ids)
+
+        faithfulness = await self.faithfulness_evaluator.aevaluate(response_text, retrieved_chunks)
+        relevance = await self.relevance_evaluator.aevaluate(raw_query, retrieved_chunks)
+        combined = (faithfulness.faithfulness_score + relevance.relevance_score) / 2
+
+        def _update_scores():
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE intellisupport.responses
+                    SET faithfulness_score = %s, relevance_score = %s
+                    WHERE response_id = %s
+                    """,
+                    (faithfulness.faithfulness_score, relevance.relevance_score, response_id),
+                )
+            self.conn.commit()
+
+        await anyio.to_thread.run_sync(_update_scores)
+
+        return EvaluationReport(
+            query_id=query_id,
+            response_id=response_id,
+            faithfulness_score=faithfulness.faithfulness_score,
+            relevance_score=relevance.relevance_score,
+            combined_score=combined,
+        )
+
     def run_benchmark(self, test_cases: list[dict]) -> BenchmarkReport:
         classifier = IntentClassifier(model=settings.generation_model)
         embedder = Embedder(model=settings.embedding_model)

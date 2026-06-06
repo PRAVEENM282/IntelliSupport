@@ -22,6 +22,11 @@ class Embedder:
 
         return OpenAI(api_key=settings.openai_api_key or None)
 
+    def _async_client(self):
+        from openai import AsyncOpenAI
+
+        return AsyncOpenAI(api_key=settings.openai_api_key or None)
+
     def _embed_inputs_with_retry(self, texts: list[str]) -> list[list[float]]:
         last_error: Exception | None = None
         for attempt in range(4):
@@ -36,8 +41,27 @@ class Embedder:
                 time.sleep(2**attempt)
         raise EmbeddingError(f"Embedding API failed after retries: {last_error}")
 
+    async def _aembed_inputs_with_retry(self, texts: list[str]) -> list[list[float]]:
+        import asyncio
+        last_error: Exception | None = None
+        for attempt in range(4):
+            try:
+                response = await self._async_client().embeddings.create(model=self.model, input=texts)
+                ordered = sorted(response.data, key=lambda item: item.index)
+                return [list(item.embedding) for item in ordered]
+            except Exception as exc:
+                last_error = exc
+                if attempt == 3:
+                    break
+                await asyncio.sleep(2**attempt)
+        raise EmbeddingError(f"Embedding API failed after retries: {last_error}")
+
     def embed_text(self, text: str) -> list[float]:
         return self._embed_inputs_with_retry([text])[0]
+
+    async def aembed_text(self, text: str) -> list[float]:
+        res = await self._aembed_inputs_with_retry([text])
+        return res[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         embeddings: list[list[float]] = []
