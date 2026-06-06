@@ -1,0 +1,39 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-praveen}
+      POSTGRES_DB: ${POSTGRES_DB:-intellisupport}
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-intellisupport}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-praveen}@db:5432/${POSTGRES_DB:-intellisupport}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      GENERATION_MODEL: ${GENERATION_MODEL:-gpt-4o-mini}
+      CHUNK_SIZE: ${CHUNK_SIZE:-512}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-50}
+      HYBRID_ALPHA: ${HYBRID_ALPHA:-0.7}
+      TOP_K: ${TOP_K:-5}
+
+volumes:
+  pgdata:
