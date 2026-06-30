@@ -74,24 +74,20 @@ def _get_conn(app: FastAPI):
         raise HTTPException(503, "Database not configured")
     return conn
 
-import anyio
-
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
+def query(request: QueryRequest):
     conn = _get_conn(app)
-    intent = await app.state.intent_classifier.aclassify(request.query)
+    intent = app.state.intent_classifier.classify(request.query)
     query_id = f"qry_{uuid4().hex[:8]}"
     response_id = f"rsp_{uuid4().hex[:8]}"
-    query_embedding = await app.state.embedder.aembed_text(request.query)
+    query_embedding = app.state.embedder.embed_text(request.query)
 
     if app.state.hybrid_retriever:
-        chunks = await anyio.to_thread.run_sync(
-            app.state.hybrid_retriever.retrieve_with_reranking,
+        chunks = app.state.hybrid_retriever.retrieve_with_reranking(
             request.query, query_embedding, request.top_k,
         )
     else:
-        chunks = await anyio.to_thread.run_sync(
-            app.state.vector_store.similarity_search,
+        chunks = app.state.vector_store.similarity_search(
             query_embedding, request.top_k,
         )
 
@@ -100,22 +96,19 @@ async def query(request: QueryRequest):
     else:
         messages = app.state.prompt_builder.build_clarification_prompt(request.query, intent)
     
-    generated = await app.state.response_generator.agenerate(messages)
+    generated = app.state.response_generator.generate(messages)
     retrieved_chunk_ids = [c.chunk_id for c in chunks]
 
-    def _save_data():
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO intellisupport.queries (query_id, raw_query, intent, intent_confidence) VALUES (%s,%s,%s,%s)",
-                (query_id, request.query, intent.intent, intent.confidence),
-            )
-            cur.execute(
-                "INSERT INTO intellisupport.responses (response_id, query_id, response_text, retrieved_chunk_ids) VALUES (%s,%s,%s,%s)",
-                (response_id, query_id, generated.response_text, retrieved_chunk_ids),
-            )
-        conn.commit()
-
-    await anyio.to_thread.run_sync(_save_data)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO intellisupport.queries (query_id, raw_query, intent, intent_confidence) VALUES (%s,%s,%s,%s)",
+            (query_id, request.query, intent.intent, intent.confidence),
+        )
+        cur.execute(
+            "INSERT INTO intellisupport.responses (response_id, query_id, response_text, retrieved_chunk_ids) VALUES (%s,%s,%s,%s)",
+            (response_id, query_id, generated.response_text, retrieved_chunk_ids),
+        )
+    conn.commit()
     
     return QueryResponse(
         query_id=query_id, 
@@ -130,18 +123,15 @@ async def query(request: QueryRequest):
 
 
 @app.post("/evaluate/{response_id}", response_model=EvaluateResponse)
-async def evaluate(response_id: str):
+def evaluate(response_id: str):
     conn = _get_conn(app)
-    def _fetch_query_id():
-        with conn.cursor() as cur:
-            cur.execute("SELECT query_id FROM intellisupport.responses WHERE response_id = %s", (response_id,))
-            row = cur.fetchone()
-        return row
+    with conn.cursor() as cur:
+        cur.execute("SELECT query_id FROM intellisupport.responses WHERE response_id = %s", (response_id,))
+        row = cur.fetchone()
     
-    row = await anyio.to_thread.run_sync(_fetch_query_id)
     if not row:
         raise HTTPException(404, "response_id not found")
-    report = await app.state.pipeline_evaluator.aevaluate_response(row[0], response_id)
+    report = app.state.pipeline_evaluator.evaluate_response(row[0], response_id)
     return EvaluateResponse(
         response_id=response_id, 
         faithfulness_score=report.faithfulness_score,
@@ -151,11 +141,10 @@ async def evaluate(response_id: str):
 
 
 @app.post("/feedback", response_model=FeedbackResponse)
-async def feedback(request: FeedbackRequest):
+def feedback(request: FeedbackRequest):
     _get_conn(app)
     try:
-        fid = await anyio.to_thread.run_sync(
-            app.state.feedback_store.store_feedback,
+        fid = app.state.feedback_store.store_feedback(
             request.response_id, request.rating, request.comment
         )
     except ValueError as exc:
@@ -164,27 +153,21 @@ async def feedback(request: FeedbackRequest):
 
 
 @app.get("/feedback/summary/{response_id}")
-async def feedback_summary(response_id: str):
+def feedback_summary(response_id: str):
     _get_conn(app)
-    return await anyio.to_thread.run_sync(
-        app.state.feedback_store.get_feedback_summary,
-        response_id
-    )
+    return app.state.feedback_store.get_feedback_summary(response_id)
 
 
 @app.get("/health", response_model=HealthResponse)
-async def health():
+def health():
     conn = getattr(app.state, "conn", None)
     if not conn:
-        return HealthResponse(status="ok", db_connected=False, chunks_indexed=0)
+        return HealthResponse(status="ok", db_connected=False, chunks_indexed=0, providers=["openai"])
     try:
-        def _count_chunks():
-            with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM intellisupport.chunks")
-                count = cur.fetchone()[0]
-            return count
-        count = await anyio.to_thread.run_sync(_count_chunks)
-        return HealthResponse(status="ok", db_connected=True, chunks_indexed=count)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM intellisupport.chunks")
+            count = cur.fetchone()[0]
+        return HealthResponse(status="ok", db_connected=True, chunks_indexed=count, providers=["openai"])
     except Exception:
         conn.rollback()
-        return HealthResponse(status="ok", db_connected=False, chunks_indexed=0)
+        return HealthResponse(status="ok", db_connected=False, chunks_indexed=0, providers=["openai"])

@@ -41,10 +41,7 @@ class IntentClassifier:
 
         return OpenAI(api_key=settings.openai_api_key or None)
 
-    def _async_client(self):
-        from openai import AsyncOpenAI
 
-        return AsyncOpenAI(api_key=settings.openai_api_key or None)
 
     def classify(self, query: str) -> IntentResult:
         labels = "\n".join(f"- {label}: {description}" for label, description in ALLOWED_INTENTS.items())
@@ -68,47 +65,26 @@ class IntentClassifier:
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content or "{}"
+        content = content.strip()
+        if content.startswith("```"):
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1:
+                content = content[start:end+1]
         try:
             data = json.loads(content)
         except (json.JSONDecodeError, ValueError):
             return IntentResult(intent="general_inquiry", confidence=0.0)
         intent = data.get("intent", "general_inquiry")
-        confidence = float(data.get("confidence", 0.0))
-        if intent not in ALLOWED_INTENTS:
-            intent = _fuzzy_match_intent(intent)
-        return IntentResult(intent=intent, confidence=max(0.0, min(1.0, confidence)))
-
-    async def aclassify(self, query: str) -> IntentResult:
-        labels = "\n".join(f"- {label}: {description}" for label, description in ALLOWED_INTENTS.items())
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You classify Nexora customer support queries. Use exactly one of these labels:\n"
-                    f"{labels}\n\n"
-                    'Respond only as JSON: {"intent": "...", "confidence": 0.0}. '
-                    "The confidence must be a float between 0 and 1."
-                ),
-            },
-            {"role": "user", "content": query},
-        ]
-
-        response = await self._async_client().chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content or "{}"
         try:
-            data = json.loads(content)
-        except (json.JSONDecodeError, ValueError):
-            return IntentResult(intent="general_inquiry", confidence=0.0)
-        intent = data.get("intent", "general_inquiry")
-        confidence = float(data.get("confidence", 0.0))
+            confidence = float(data.get("confidence", 0.0))
+        except (ValueError, TypeError):
+            confidence = 0.0
         if intent not in ALLOWED_INTENTS:
             intent = _fuzzy_match_intent(intent)
         return IntentResult(intent=intent, confidence=max(0.0, min(1.0, confidence)))
+
+
 
     def classify_batch(self, queries: list[str]) -> list[IntentResult]:
         return [self.classify(query) for query in queries]

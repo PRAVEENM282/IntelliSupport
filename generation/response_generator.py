@@ -27,10 +27,7 @@ class ResponseGenerator:
 
         return OpenAI(api_key=settings.openai_api_key or None)
 
-    def _async_client(self):
-        from openai import AsyncOpenAI
 
-        return AsyncOpenAI(api_key=settings.openai_api_key or None)
 
     def generate(self, messages: list[dict]) -> GeneratedResponse:
         response = self._client().chat.completions.create(
@@ -39,30 +36,16 @@ class ResponseGenerator:
             max_tokens=self.max_tokens,
             temperature=self.temperature,
         )
-        usage = response.usage
+        usage = getattr(response, "usage", None)
         return GeneratedResponse(
             response_text=response.choices[0].message.content or "",
             model=response.model,
-            prompt_tokens=usage.prompt_tokens if usage else 0,
-            completion_tokens=usage.completion_tokens if usage else 0,
-            total_tokens=usage.total_tokens if usage else 0,
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+            total_tokens=getattr(usage, "total_tokens", 0) if usage else 0,
         )
 
-    async def agenerate(self, messages: list[dict]) -> GeneratedResponse:
-        response = await self._async_client().chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-        )
-        usage = response.usage
-        return GeneratedResponse(
-            response_text=response.choices[0].message.content or "",
-            model=response.model,
-            prompt_tokens=usage.prompt_tokens if usage else 0,
-            completion_tokens=usage.completion_tokens if usage else 0,
-            total_tokens=usage.total_tokens if usage else 0,
-        )
+
 
     def generate_with_fallback(
         self,
@@ -81,19 +64,4 @@ class ResponseGenerator:
             return fallback
         return primary
 
-    async def agenerate_with_fallback(
-        self,
-        messages: list[dict],
-        fallback_messages: list[dict],
-    ) -> GeneratedResponse:
-        primary = await self.agenerate(messages)
-        should_retry = (
-            len(primary.response_text.strip()) < 20
-            or "i don't know" in primary.response_text.lower()
-        )
-        if not should_retry:
-            return primary
-        fallback = await self.agenerate(fallback_messages)
-        if len(fallback.response_text) > len(primary.response_text):
-            return fallback
-        return primary
+
