@@ -21,6 +21,17 @@ class IntentResult(BaseModel):
     confidence: float
 
 
+def _fuzzy_match_intent(raw: str) -> str:
+    """Best-effort match of an LLM-returned intent to ALLOWED_INTENTS keys."""
+    normalized = (raw or "").lower().replace(" ", "_").replace("-", "_").strip()
+    if normalized in ALLOWED_INTENTS:
+        return normalized
+    for key in ALLOWED_INTENTS:
+        if key in normalized or normalized in key:
+            return key
+    return "general_inquiry"
+
+
 class IntentClassifier:
     def __init__(self, model: str = "gpt-4o-mini"):
         self.model = model
@@ -50,22 +61,22 @@ class IntentClassifier:
             {"role": "user", "content": query},
         ]
 
+        response = self._client().chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or "{}"
         try:
-            response = self._client().chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-            content = response.choices[0].message.content or "{}"
             data = json.loads(content)
-            intent = data.get("intent")
-            confidence = float(data.get("confidence", 0.0))
-            if intent not in ALLOWED_INTENTS:
-                raise ValueError("invalid intent")
-            return IntentResult(intent=intent, confidence=max(0.0, min(1.0, confidence)))
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             return IntentResult(intent="general_inquiry", confidence=0.0)
+        intent = data.get("intent", "general_inquiry")
+        confidence = float(data.get("confidence", 0.0))
+        if intent not in ALLOWED_INTENTS:
+            intent = _fuzzy_match_intent(intent)
+        return IntentResult(intent=intent, confidence=max(0.0, min(1.0, confidence)))
 
     async def aclassify(self, query: str) -> IntentResult:
         labels = "\n".join(f"- {label}: {description}" for label, description in ALLOWED_INTENTS.items())
@@ -82,22 +93,22 @@ class IntentClassifier:
             {"role": "user", "content": query},
         ]
 
+        response = await self._async_client().chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or "{}"
         try:
-            response = await self._async_client().chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-            content = response.choices[0].message.content or "{}"
             data = json.loads(content)
-            intent = data.get("intent")
-            confidence = float(data.get("confidence", 0.0))
-            if intent not in ALLOWED_INTENTS:
-                raise ValueError("invalid intent")
-            return IntentResult(intent=intent, confidence=max(0.0, min(1.0, confidence)))
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             return IntentResult(intent="general_inquiry", confidence=0.0)
+        intent = data.get("intent", "general_inquiry")
+        confidence = float(data.get("confidence", 0.0))
+        if intent not in ALLOWED_INTENTS:
+            intent = _fuzzy_match_intent(intent)
+        return IntentResult(intent=intent, confidence=max(0.0, min(1.0, confidence)))
 
     def classify_batch(self, queries: list[str]) -> list[IntentResult]:
         return [self.classify(query) for query in queries]

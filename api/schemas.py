@@ -116,7 +116,7 @@ class HealthResponse(BaseModel):
     status: str
     db_connected: bool
     chunks_indexed: int
-    providers: list[str]
+    providers: list[str] = ["openai"]
 
 
 class FileUploadResponse(BaseModel):
